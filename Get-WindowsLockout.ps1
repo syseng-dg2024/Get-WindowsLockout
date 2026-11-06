@@ -382,6 +382,15 @@ foreach ($DC in $DomainControllers) {
                 try {
                     $x = [xml]$Ev.ToXml(); $d = @{}
                     foreach ($n in $x.Event.EventData.Data) { if ($n.Name) { $d[$n.Name] = $n.'#text' } }
+                    if ($Ev.Id -eq 4740 -and
+                        (-not $d['CallerComputerName'] -or
+                         $d['CallerComputerName'] -eq '-')) {
+                        $m = [regex]::Match($Ev.Message,
+                            'Caller Computer Name:\s+(\S+)')
+                        if ($m.Success) {
+                            $d['CallerComputerName'] = $m.Groups[1].Value
+                        }
+                    }
                     [PSCustomObject]@{
                         TimeCreated         = $Ev.TimeCreated
                         EventId             = $Ev.Id
@@ -499,8 +508,20 @@ foreach ($Ev in $AllDCEvents) {
     # CallerComputer from 4740
     if ($Ev.EventId -eq 4740 -and $Ev.CallerComputer) {
         $c = $Ev.CallerComputer.TrimEnd('$').ToUpper().Trim()
-        if ($c -and $c -ne '-' -and $c -notin $DCShortNames -and -not $TargetComputers.Contains($c)) {
+        if ($c -and $c -ne '-' -and
+            -not $TargetComputers.Contains($c)) {
             Write-Host "  + (4740 CallerComputer) $c"
+            $TargetComputers.Add($c)
+        }
+    }
+
+    # Loopback = the logging DC is the caller
+    $lb = '^(::1|127\.0\.0\.1|::ffff:127\.0\.0\.1)$'
+    if ($Ev.EventId -in @(4625,4771,4776) -and
+        $Ev.IpAddress -match $lb) {
+        $c = $Ev.SourceDC.ToUpper()
+        if (-not $TargetComputers.Contains($c)) {
+            Write-Host "  + (Loopback) $c [DC]"
             $TargetComputers.Add($c)
         }
     }
@@ -1100,6 +1121,7 @@ foreach ($Computer in $TargetComputers) {
         ScheduledTasks    = ''
         StartupItems      = ''
         #Sessions          = ''
+        LogonSessions     = ''
     }
 
     # ======= AD User Details (runs locally on DC; no remote execution) =======
@@ -1279,6 +1301,41 @@ if (-not $sids -or $sids.Count -eq 0) {
         $Detail.StartupItems = "<p>Unable to query startup items: $($_.Exception.Message)</p>"
     }
 
+    # ======= LSA Logon Sessions (klist) =======
+    Write-Host ("  [{0}] LogonSessions..." -f $Computer)
+    try {
+        $kl = Invoke-RemoteCmdWmi `
+            -ComputerName $Computer `
+            -CommandLine "klist sessions" `
+            -TimeoutSec 30
+        $pat  = "\\{0}\s" -f [regex]::Escape($UserName)
+        $hits = @($kl -split "`r?`n" |
+                  Where-Object { $_ -match $pat })
+        if ($hits.Count -gt 0) {
+            $qu = try {
+                Get-InteractiveSessionsTextWmi `
+                    -ComputerName $Computer
+            } catch { "query user failed" }
+            $nl = [Environment]::NewLine
+            $Detail.LogonSessions =
+                "<p><strong>$($hits.Count) LSA " +
+                "session(s) for $UserName.</strong> " +
+                "If not listed in query user below, " +
+                "they are orphaned and retry " +
+                "Kerberos with a stale password " +
+                "(reboot to clear).</p>" +
+                "<pre>$($hits -join $nl)</pre>" +
+                "<h4>query user</h4><pre>$qu</pre>"
+        } else {
+            $Detail.LogonSessions =
+                "<p>No LSA sessions for $UserName.</p>"
+        }
+    } catch {
+        $Detail.LogonSessions =
+            "<p>klist failed: " +
+            "$($_.Exception.Message)</p>"
+    }
+
     $DeviceDetails.Add($Detail)
 }
 
@@ -1352,6 +1409,15 @@ foreach ($Computer in $TargetComputers) {
                 $x = [xml]$Ev.ToXml()
                 $d = @{}
                 foreach ($n in $x.Event.EventData.Data) { if ($n.Name) { $d[$n.Name] = $n.'#text' } }
+                if ($Ev.Id -eq 4740 -and
+                    (-not $d['CallerComputerName'] -or
+                     $d['CallerComputerName'] -eq '-')) {
+                    $m = [regex]::Match($Ev.Message,
+                        'Caller Computer Name:\s+(\S+)')
+                    if ($m.Success) {
+                        $d['CallerComputerName'] = $m.Groups[1].Value
+                    }
+                }
 
                 $tu = $d['TargetUserName']
                 if ($tu -ne $UserName -and $tu -ne "$UserName@$DNSZone") { continue }
@@ -1529,6 +1595,7 @@ if ($DeviceDetails -and $DeviceDetails.Count -gt 0) {
             [PSCustomObject]@{ Title='Saved WiFi Profiles';      Content=$Detail.SavedWifi }
             [PSCustomObject]@{ Title='Scheduled Tasks';          Content=$Detail.ScheduledTasks }
             [PSCustomObject]@{ Title='Startup Items';            Content=$Detail.StartupItems }
+            [PSCustomObject]@{ Title='LSA Logon Sessions (klist)'; Content = $Detail.LogonSessions }
         )) {
             $body = if ($Sec.Content) { $Sec.Content } else { "<p class='hint'>No data returned.</p>" }
             $HtmlBody += "<div class='section'><h3>$($Sec.Title)</h3>$body</div>`n"
