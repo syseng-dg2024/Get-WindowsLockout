@@ -8,7 +8,7 @@ Add-Type -AssemblyName System.Drawing
 # ==============================================================================
 $HoursBack    = 12
 $HoursForward = 12
-$TempPath     = 'C:\Temp'
+$TempPath     = $PSScriptRoot
 
 [int[]]$EventIdsGroup1 = @(4625,4740,4776,4771,5816,5817,4724,<#4688,#>4648,4723,4767,4768,4770,4777,4779,4769)
 [int[]]$EventIdsGroup2 = @(4624,4634,4647,4672,4722,4725,4738,4778,4800,4801)
