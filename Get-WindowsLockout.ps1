@@ -1355,6 +1355,10 @@ $MaxDeviceEvents = 2000   # safety cap per computer; raise if needed
 $DeviceEventIds = $EventIdsGroup1 | Sort-Object -Unique
 
 foreach ($Computer in $TargetComputers) {
+    if ($Computer -in $DCShortNames) {
+        Write-Host "  [$Computer] DC - skipping event scan."
+        continue
+    }
     Write-Host ("  [{0}] Querying Security log (server-side filter)..." -f $Computer)
     try {
         $effectiveEnd = $EndDate
